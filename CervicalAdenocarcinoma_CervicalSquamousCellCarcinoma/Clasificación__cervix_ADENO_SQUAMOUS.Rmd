@@ -1,0 +1,462 @@
+
+---
+title: "Clasificación de muestras cancerígenas de cérvix: ADENO - SQUAMOUS"
+author: "Lucía Almorox Antón"
+date: "2023-01-24"
+output: html_document
+---
+
+This code was created for the study "Uterine Cervix and Corpus Cancers Characterization through Gene Expression Analysis Using the Knowseq Tool".
+
+Department of Computer Engineering, Automatics and Robotics,University of Granada. C.I.T.I.C., Periodista Rafael G´omez Montero, 2, 18014. Granada, Spain.
+
+luciaalmorox@correo.ugr.es
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(KnowSeq)
+require(caret)
+rm(list = ls())
+memory.limit(size=10000)
+set.seed(111)
+```
+
+
+```{r 1}
+# creadas con el documento Preprocesamiento_cervix_ADENO_SQUAMOUS.Rmd
+load("MATRIZ_LIMPIA_ADENO_SQUAMOUS.RData")
+load("quality_labels_ADENO_SQUAMOUS.RData")
+```
+
+```{r}
+table(qualityLabels)
+```
+
+
+# A2. Resultados de la clasificación ADENO-SQUAMOUS utilizando los 10 primeros genes del ranking MRMR para cada una de las 5 ejecuciones 5-CV (5 rankings).
+
+
+A continuación, utilizamos únicamente el método "MRMR" para realizar el ranking de genes con mayor importancia para predecir la variable de salida (utilizamos solo los 10 primeros genes del ranking). En este caso, realizamos una validación cruzada 5-fold. Con cada fold, entrenamos un clasificador Knn (obtenemos las 3 medidas de calidad anteriores del entrenamiento) y utilizamos el subconjunto de validación para predecir las clases de cada muestra y obtener la precisión de dicha validación.
+
+Para cada fold obtenemos, además, las cuatro gráficas (heatmap, matriz de confusión, boxplot y gráficas con las medidas de calidad en función del número de genes) relativas al entrenamiento.`
+
+
+```{r}
+
+set.seed(222)
+#SUBDIV TRANI TEST -> COGIENDO CADA VEZ UN FOLD
+FOLDS_ACC_TRN = data.frame()
+FOLDS_ACC_TST = data.frame()
+TABLA_10_GENES = data.frame()
+
+nDEGS <- c()
+expressionMatrixCorrected <- batchMatrix
+cv.Index <- createFolds(qualityLabels,5,returnTrain = T)
+for (oneFOLD in 1:5 ){
+  train_ind = cv.Index[[oneFOLD]]
+  XTRN =expressionMatrixCorrected[,train_ind] # muestras en las cols 
+                                              # (seleccionas muestras)
+                                              # los genes (filas) los coges 
+                                              # todos siempre claro
+  XTEST = expressionMatrixCorrected[,-train_ind]
+
+  YTRN= qualityLabels[train_ind]
+  YTEST=qualityLabels[-train_ind]
+ 
+
+# Extraemos los genes diferencialmente destacados teniendo en cuenta las 
+# correccion mediante SVA
+ 
+  DEGsInfo <- DEGsExtraction(XTRN, YTRN, lfc = 2, pvalue = 0.001, cov=2)
+
+
+
+# Extraemos la tabla de estadisticas de los genes diferencialmente expresados, 
+  # así como la matriz ya filtrada con dichos genes.
+  topTable <- DEGsInfo$DEG_Results$MulticlassLFC
+  DEGsMatrix <- DEGsInfo$DEG_Results$DEGs_Matrix
+  nDEGS <- c(nDEGS,nrow(DEGsMatrix))
+
+# Top-12 boxplots y heatmap
+  dataPlot(DEGsMatrix[1:12,], YTRN, mode = "genesBoxplot", toPNG=FALSE, 
+           toPDF=FALSE, main=paste("FOLD",oneFOLD))
+
+  dataPlot(DEGsMatrix[1:12,], YTRN, mode = "heatmap", toPNG=FALSE, toPDF=FALSE,
+           main=paste("FOLD",oneFOLD))
+
+
+# Se preparan tanto la matriz como los labels
+MLMatrix <- t(DEGsMatrix) # LOS GENES EN LAS COLS Y LAS MUESTRAS EN LAS FILAS
+MLLabels <- YTRN #SUPONGO
+
+# Llevamos a cabo un proceso de Seleccion de Caracteristicas
+# AHORA SOLO MRMR
+FSRankingMRMR <- featureSelection(MLMatrix, MLLabels, mode = "mrmr", 
+                                  vars_selected = colnames(MLMatrix))
+TABLA_10_GENES <- rbind(TABLA_10_GENES,names(FSRankingMRMR)[1:10])
+
+
+
+   knn_trn <- knn_trn(MLMatrix, MLLabels, 
+                      vars_selected = names(FSRankingMRMR)[1:10])
+   # por defecto hace un 10 cross validation
+  knn_results <- rbind(knn_trn$accuracyInfo$meanAccuracy,        knn_trn$sensitivityInfo$meanSensitivity,knn_trn$specificityInfo$meanSpecificity)
+
+
+  FOLDS_ACC_TRN <- rbind(FOLDS_ACC_TRN,
+                         unname(knn_trn$accuracyInfo$meanAccuracy))
+  
+dataPlot(knn_results, MLLabels, legend = c("Mean Accuracy","Mean Sensitivity",
+                                    "Mean Specificity"), mode = "classResults", 
+         main=paste("FOLD",oneFOLD), xlab="# Genes", ylab="Prediction Score")
+#dataPlot(knn_trn, MLLabels, mode = "heatmapResults")
+
+#dataPlot(knn_results[,1:4], MLLabels, legend = c("Mean Accuracy",
+#"Mean Sensitivity","Mean Specificity"), mode = "classResults")
+
+dataPlot(t(MLMatrix[,names(FSRankingMRMR[1:3])]), MLLabels, mode = "heatmap",
+         main=paste("FOLD",oneFOLD))
+dataPlot(knn_trn$cfMats[[3]]$table, MLLabels, mode = "confusionMatrix",
+         main=paste("FOLD",oneFOLD))
+dataPlot(t(MLMatrix[,names(FSRankingMRMR[1:3])]), MLLabels, mode = "genesBoxplot",
+         main=paste("FOLD",oneFOLD))
+
+
+# Ahora con el TEST:
+ 
+ results_test_knn <- knn_test(MLMatrix, MLLabels, t(XTEST),
+YTEST, names(FSRankingMRMR)[1:10], bestK = knn_trn$bestK)
+ 
+ FOLDS_ACC_TST <- rbind(FOLDS_ACC_TST,unname(results_test_knn$accVector))
+ if (oneFOLD==1){
+   AllMats <- results_test_knn$cfMats[[2]]$table
+ } else {
+    AllMats <- AllMats + results_test_knn$cfMats[[2]]$table
+ }
+
+
+
+
+}
+
+```
+```{r}
+dataPlot(DEGsMatrix[1:12,], YTRN, mode = "genesBoxplot", toPNG=T, 
+toPDF=F)
+```
+
+```{r}
+cat("Número de genes en la matriz de expresión corregida: ",nrow(expressionMatrixCorrected))
+cat("Número de DEGs extraídos en cada fold: ",nDEGS)
+
+```
+
+
+Gráfica de la precisión del entrenamiento de cada fold en función del número de genes utilizados.
+
+
+```{r}
+dataPlot(as.matrix(FOLDS_ACC_TRN), MLLabels, legend = c("FOLD 1","FOLD 2",
+  "FOLD 3", "FOLD 4", "FOLD 5"), mode = "classResults", 
+  main=paste("KNN Accuracy"), xlab="# Genes", ylab="Prediction Score")
+
+```
+
+Suma de las matrices de confusión de validación.
+
+```{r}
+dataPlot(AllMats, MLLabels, mode = "confusionMatrix")
+```
+
+Tabla con los 10 primeros genes del ranking MRMR obtenido con cada fold.
+
+```{r}
+colnames(TABLA_10_GENES) <- c("Gen1","Gen2","Gen3","Gen4","Gen5","Gen6","Gen7",
+                              "Gen8","Gen9","Gen10")
+TABLA_10_GENES
+write.csv(file = "TABLA10.csv", x = TABLA_10_GENES)
+```
+Posible huella génica: 'GPAT2', 'LINC01641', 'XIAP', 'NIT2', 'S100A7'.
+
+
+Gráfica de la precisión del entrenamiento y la validación de cada fold en función del número de genes utilizados.
+
+```{r}
+library("ggplot2")
+num_genes <- 1:10
+folds_label <- c("Fold1","Fold2","Fold3","Fold4","Fold5")
+colnames(FOLDS_ACC_TRN) <- num_genes
+rownames(FOLDS_ACC_TRN) <- folds_label
+trn_dat <- t(FOLDS_ACC_TRN)
+trn_dat <- cbind(trn_dat,1:10)
+colnames(trn_dat)[6] <- "NGENES"
+trn_dat <- as.data.frame(trn_dat)
+
+
+colnames(FOLDS_ACC_TST) <- num_genes
+rownames(FOLDS_ACC_TST) <- folds_label
+tst_dat <- t(FOLDS_ACC_TST)
+tst_dat <- cbind(tst_dat,1:10)
+colnames(tst_dat)[6] <- "NGENES"
+tst_dat <- as.data.frame(tst_dat)
+
+
+color1 <- rgb(9/255, 137/255, 134/255, maxColorValue = 1)
+color2 <- rgb(255/255, 198/255, 51/255, maxColorValue = 1)
+color3 <- rgb(253/255, 128/255, 174/255, maxColorValue = 1)
+color5 <- rgb(14/255, 14/255, 15/255, maxColorValue = 1)
+color4 <- rgb(51/255, 243/255, 25/255, maxColorValue = 1)
+plot1<-ggplot(trn_dat, mapping= aes(x = NGENES, y=Fold1)) + 
+  geom_line(data = trn_dat, aes(x = NGENES, y=Fold1, colour='Fold1', 
+                                linetype = "TRAIN"),linewidth=0.3)+
+  geom_line(data = trn_dat, aes(x = NGENES, y=Fold2, colour='Fold2', 
+                                linetype = "TRAIN"),linewidth=0.3)+
+  geom_line(data = trn_dat, aes(x = NGENES, y=Fold3, colour='Fold3',
+                                linetype = "TRAIN"),linewidth=0.3)+
+  geom_line(data = trn_dat, aes(x = NGENES, y=Fold4, colour='Fold4', 
+                                linetype = "TRAIN"),linewidth=0.3)+
+  geom_line(data = trn_dat, aes(x = NGENES, y=Fold5, colour='Fold5', 
+                                linetype = "TRAIN"),linewidth=0.3)+
+  geom_line(data= tst_dat, aes(x = NGENES, y=Fold1, colour='Fold1', 
+                               linetype = "TEST"),linewidth=0.3)+
+  geom_line(data= tst_dat, aes(x = NGENES, y=Fold2, colour='Fold2', 
+                               linetype = "TEST"),linewidth=0.3)+
+  geom_line(data= tst_dat, aes(x = NGENES, y=Fold3, colour='Fold3', 
+                               linetype = "TEST"),linewidth=0.3)+
+  geom_line(data= tst_dat, aes(x = NGENES, y=Fold4, colour='Fold4', 
+                               linetype = "TEST"),linewidth=0.3)+
+  geom_line(data= tst_dat, aes(x = NGENES, y=Fold5, colour='Fold5', 
+                               linetype = "TEST"),linewidth=0.3)+
+  theme_bw()+
+  scale_y_continuous(name="Accuracy",limits = c(0.99,1.01),
+        breaks = round(seq(0.99, 1, by = 0.005),2))+
+  scale_x_continuous(name="# Genes",limits = c(1,10),
+        breaks = seq(1, 20, by = 1))+
+  scale_color_manual(name='Color',
+        breaks=c('Fold1','Fold2','Fold3','Fold4','Fold5'),
+        values = c('Fold1'=color1, 'Fold2'=color2, 'Fold3'=color3, 
+        'Fold4'=color4,'Fold5'=color5))+
+  scale_linetype_manual(name= 'Line type', breaks=c('TRAIN','TEST'),
+        values=c('TRAIN'='solid','TEST'='longdash'))+
+  theme(legend.key.size = unit(1, 'cm'))
+
+plot1
+# +theme(plot.title = element_text(size=12,face='bold',hjust = 0.5)) 
+```
+
+# A3. Clasificación de la muestra mixta (adenoescamosa) utlizando el clasificador anterior (entrenado con el conjunto de entrenamiento y la selección de características correspondiente al último de los 5 folds). 
+
+Se muestran los resultados de la clasificación de la muestra mixta. La información relativa a esta muestra ha sido creada con el documento Preprocesamiento_ADENO_SQUAMOUS_ADENOSQUAMOUS.Rmd
+
+```{r}
+load(file="ADENO_SQUAMOUS_SAMPLE.RData") # creado con Preprocesamiento_ADENO_SQUAMOUS_ADENOSQUAMOUS.Rmd
+tAS <- as.data.frame(t(AS))
+tAS2 <- tAS[,colnames(t(XTEST))]
+new_XTEST <- rbind(t(XTEST),tAS2)
+new_YTEST <- c(YTEST,"ADENO")
+
+#table(colnames(t(XTEST)) == colnames(tAS2))
+
+untest <- knn_test(MLMatrix, MLLabels, new_XTEST,
+new_YTEST,names(FSRankingMRMR)[1:10], bestK = knn_trn$bestK)
+
+
+tot_pred <- untest$predictions[[1]][56,]
+for (i in 2:10){
+  tot_pred <- rbind(tot_pred,untest$predictions[[i]][56,])
+}
+
+tot_pred
+write.csv(tot_pred,file="tot_pred_adeno_squad.csv")
+untest$accVector
+```
+
+Guardamos la expresión de la muestra mixta en los 10 genes que utiliza el clasificador.
+
+```{r}
+
+write.csv(tAS[,names(FSRankingMRMR[1:10])],file="tAS_1_10_RANKING.csv")
+```
+
+Consultamos la expresión de las clases originales (ADENO y SQUAMOUS) y de la muestra mixta (ADENO_SQUAMOUS) en los 10 genes que utiliza el clasificador. Para ello, se usa la matriz corregida que incluye la muestra mixta. Dicha matriz ha sido creada con el documento Preprocesamiento_ADENO_SQUAMOUS_ADENOSQUAMOUS.Rmd.
+
+```{r}
+load(file="quality_labels_MIXTA.RData")
+load(file="MATRIZ_LIMPIA_MIXTA.RData")
+dataPlot(batchMatrix2[names(FSRankingMRMR[1:10]),], qualityLabels2, mode = "genesBoxplot", toPNG=T)
+```
+```{r}
+#qualityLabels2
+```
+
+
+
+# A4. Huella final de un solo gen.  5CV.
+
+
+```{r}
+
+
+selecc <- c('ICA1L','ICA1L')
+#SUBDIV TRANI TEST -> COGIENDO CADA VEZ UN FOLD
+FOLDS_ACC_TRN = data.frame()
+FOLDS_ACC_TST = data.frame()
+
+
+for (oneFOLD in 1:5 ){
+  train_ind = cv.Index[[oneFOLD]]
+  # muestras en las cols (seleccionas muestras)
+  XTRN =expressionMatrixCorrected[,train_ind] 
+  
+  # los genes (filas) los coges todos siempre claro
+  XTEST = expressionMatrixCorrected[,-train_ind]
+
+  YTRN= qualityLabels[train_ind]
+  YTEST=qualityLabels[-train_ind]
+ 
+
+# Se preparan tanto la matriz como los labels
+MLMatrix <- t(XTRN) # LOS GENES EN LAS COLS Y LAS MUESTRAS EN LAS FILAS
+MLLabels <- YTRN #
+
+# YA NO Llevamos a cabo un proceso de Selección de Caracteristicas
+# YA ESTÁN SELECCIONADAS
+
+knn_trn <- knn_trn(MLMatrix, MLLabels, vars_selected = selecc)
+  # por defecto hace un 10 cross validation
+knn_results <- rbind(knn_trn$accuracyInfo$meanAccuracy,        knn_trn$sensitivityInfo$meanSensitivity,knn_trn$specificityInfo$meanSpecificity)
+
+
+FOLDS_ACC_TRN <- rbind(FOLDS_ACC_TRN,unname(knn_trn$accuracyInfo$meanAccuracy))
+dataPlot(knn_results, MLLabels, legend = c("Mean Accuracy","Mean Sensitivity",
+                                           "Mean Specificity"), mode = "classResults", main=paste("FOLD",oneFOLD), xlab="# Genes", ylab="Prediction Score")
+
+
+dataPlot(t(MLMatrix[,selecc]), MLLabels, mode = "heatmap",
+         main=paste("FOLD",oneFOLD))
+dataPlot(knn_trn$cfMats[[3]]$table, MLLabels, mode = "confusionMatrix",
+         main=paste("FOLD",oneFOLD))
+dataPlot(t(MLMatrix[,selecc]), MLLabels, mode = "genesBoxplot"
+         ,main=paste("FOLD",oneFOLD))
+
+
+# Ahora con el TEST:
+ 
+ results_test_knn <- knn_test(MLMatrix, MLLabels, t(XTEST),
+YTEST, selecc, bestK = knn_trn$bestK)
+ 
+ FOLDS_ACC_TST <- rbind(FOLDS_ACC_TST,unname(results_test_knn$accVector))
+ 
+  FOLDS_ACC_TST <- rbind(FOLDS_ACC_TST,unname(results_test_knn$accVector))
+ if (oneFOLD==1){
+   AllMats <- results_test_knn$cfMats[[2]]$table
+ } else {
+    AllMats <- AllMats + results_test_knn$cfMats[[2]]$table
+ }
+
+
+
+}
+
+
+```
+
+Suma de las matrices de confusión de todas las validaciones.
+
+```{r}
+dataPlot(AllMats, MLLabels, mode = "confusionMatrix")
+```
+
+# A5.- DEGs enrichment methodology.
+
+Obtenemos la anotación funcional de los genes seleccionados y con estas, descargamos la información sobre las ontologías génicas (la función molecular de los productos génicos; su rol en los procesos biológicos; y su localización en componentes celulares).
+
+```{r}
+
+# Cambiamos el nombre del gen por la anotacion funcional
+# (identificadores ENTREZ)
+# y eliminamos el que no tenga correspondencia.
+
+entrezAnnotation <- getGenesAnnotation('ICA1L', attributes = 
+    c("external_gene_name","entrezgene_id"), filter = "external_gene_name")
+entrezGeneIds<- entrezAnnotation$entrezgene_id[!is.na(entrezAnnotation$entrezgene_id)]
+
+# Con estas anotaciones obtenemos las 3 categorías ontológicas.
+GOs <- geneOntologyEnrichment(as.character(entrezGeneIds), geneType = 
+                                "ENTREZ_GENE_ID")
+ # También te devuelve el pvlaue, cómo de precisa es la asociación 
+# del término GO para ese gen
+
+# Molecular Function
+GO_MF <- GOs$`MF Ontology GOs`
+write.csv(file = "GO_MF_ICA1L.csv", x = GO_MF)
+
+# Celular Component
+GO_CC <- GOs$`CC Ontology GOs`
+write.csv(file = "GO_CC_ICA1L.csv", x = GO_CC)
+
+# Biological Process
+GO_BP <- GOs$`BP Ontology GOs`
+write.csv(file = "GO_BP_ICA1L.csv", x = GO_BP)
+
+
+```
+```{r}
+entrezAnnotation <- getGenesAnnotation('ICA1L', attributes = 
+    c("external_gene_name","entrezgene_id"), filter = "external_gene_name")
+entrezGeneIds<- entrezAnnotation$entrezgene_id[!is.na(entrezAnnotation$entrezgene_id)]
+
+# Con estas anotaciones obtenemos las 3 categorías ontológicas.
+GOs <- geneOntologyEnrichment(as.character(entrezGeneIds), geneType = 
+                                "ENTREZ_GENE_ID")
+ # También te devuelve el pvlaue, cómo de precisa es la asociación 
+# del término GO para ese gen
+
+# Molecular Function
+GO_MF <- GOs$`MF Ontology GOs`
+write.csv(file = "GO_MF_ICA1L.csv", x = GO_MF)
+
+# Celular Component
+GO_CC <- GOs$`CC Ontology GOs`
+write.csv(file = "GO_CC_ICA1L.csv", x = GO_CC)
+
+# Biological Process
+GO_BP <- GOs$`BP Ontology GOs`
+write.csv(file = "GO_BP_ICA1L.csv", x = GO_BP)
+
+```
+
+
+
+Información sobre los pathways: 
+
+```{r}
+# Se descarga informacion sobre los Pathways
+pathways <- DEGsToPathways(entrezAnnotation$external_gene_name)
+
+```
+
+Obtenemos información sobre las enfermedades relacionadas con los genes seleccionados.
+
+```{r}
+# Se descarga informacion sobre las enfermedades relacionadas
+# Este no funciona porque consulta una API que ahora ha cambiado la url, el 
+#siguiente igual
+diseases <- DEGsToDiseases(entrezAnnotation$external_gene_name, getEvidences 
+                           = TRUE)
+
+# Lanzamos el report automatico
+#knowseqReport(geneExprMatrix,labels,'knowSeq-report',clasifAlgs=c('knn'), 
+# qualityAnalysis = F, getDiseases=TRUE, geneOntology=FALSE, maxGenes = 12)
+
+
+
+dis_ICA1L <- diseases$ICA1L
+write.csv(file = "dis_ICA1L.csv", x = dis_ICA1L)
+
+getwd()
+```
+
+
+
