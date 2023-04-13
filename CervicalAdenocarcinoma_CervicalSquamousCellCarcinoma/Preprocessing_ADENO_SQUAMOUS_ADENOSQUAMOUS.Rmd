@@ -1,0 +1,130 @@
+---
+title: "Untitled"
+author: "Lucía Almorox Antón"
+date: "2023-02-08"
+output: html_document
+---
+
+This code was created for the study "Uterine Cervix and Corpus Cancers Characterization through Gene Expression Analysis Using the Knowseq Tool".
+
+Department of Computer Engineering, Automatics and Robotics,University of Granada. C.I.T.I.C., Periodista Rafael G´omez Montero, 2, 18014. Granada, Spain.
+
+luciaalmorox@correo.ugr.es
+
+
+With this script, the preprocessing is repeated for the ADENO and SQUAMOUS classification but including the adenosquamous samples (there are only two and after outlier removal, one).
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(KnowSeq)
+rm(list = ls())
+memory.limit(size=10000)
+set.seed(111)
+```
+
+Definition of the classes of interest:
+
+```{r}
+samples <- read.table(file = 'SAMPLES_CERVIX.tsv', sep = '\t', header = TRUE)
+Class <- samples$Sample.Type
+Class[Class=='Solid Tissue Normal'] <- 'HEALTHY'
+table(Class)
+
+library(readr)
+clinical <- read_delim(file = 'clinical.tsv')
+
+for (i in 1:nrow(samples)){
+  if (Class[i] != 'HEALTHY'){
+    CASE_ID_i <- samples$Case.ID[i]
+    clinical_i <- clinical[clinical$case_submitter_id==CASE_ID_i,]
+    ENF <- clinical_i$primary_diagnosis[1]
+    Class[i] <- ENF
+  }
+}
+
+table(Class)
+Class[Class=='Adenocarcinoma, endocervical type'|Class=='Adenocarcinoma, NOS'|Class=='Endometrioid adenocarcinoma, NOS'] <- 'ADENO'
+Class[Class=='Adenosquamous carcinoma'] <- 'ADENO_SQUAMOUS'
+Class[Class != 'ADENO_SQUAMOUS' & Class != 'ADENO' & Class !='HEALTHY'] <- 'SQUAMOUS'
+
+table(Class)
+```
+
+
+```{r}
+# Create the necessary variables
+Run <- paste(samples$File.Name,".counts",sep = "")
+Path <- paste("./",samples$File.ID,sep = "")
+# Export DataFrame to CSV
+data.info2 <- data.frame(Run = Run, Path = Path, Class = Class)
+#write.csv(file = "data_info_STAGES.csv", x = data.info)
+
+```
+
+```{r}
+data.info2 <- data.info2[!(data.info2$Class=='HEALTHY'),] # only healthy samples are removed
+
+table(data.info2$Class)
+write.csv(file = "data_info2.csv", x = data.info2)
+
+```
+
+Creation of the corrected matrix:
+
+```{r}
+
+# We load and merge the count files (genes in rows, samples in columns).
+countsInfo2 <- countsToMatrix("data_info2.csv", extension = "")
+
+# We export both the data matrix and the labels to new variables
+countsMatrix2 <- countsInfo2$countsMatrix
+labels2 <- countsInfo2$labels
+
+# We query the Gene Symbols and GC content for each gene
+# (if the GC value is very high, it indicates that the sequencing did not go well, 
+# but we will not pay attention to it in this case).
+myAnnotation2 <- getGenesAnnotation(rownames(countsMatrix2))
+
+# We calculate the expression values using the count matrix and the previously acquired annotation
+geneExprMatrix2 <- calculateGeneExpressionValues(countsMatrix2, annotation = myAnnotation2)
+# We are already doing a first normalization, although it is not the complete normalization. 
+# (the count values are not "raw" anymore).
+#save(geneExprMatrix2,file="geneEMAT2.RData")
+
+
+# We only keep genes that have a name, i.e., those that are known.
+geneExprMatrix2 <- geneExprMatrix2[!is.na(rownames(geneExprMatrix2)),]
+# We perform the RNAseq quality analysis: we remove those samples 
+# that may have poorer quality or whose expression distribution 
+# deviates significantly from the distribution of the rest of the samples (outliers).
+# If any samples are removed, the number of columns will be reduced.
+QAResults2 <- RNAseqQA(geneExprMatrix2, toRemoval = TRUE, toPNG=FALSE, toPDF=FALSE)
+
+qualityMatrix2 <- QAResults2$matrix
+
+# We update the Labels object to keep only those that correspond 
+# to the samples that remain after removing outliers.
+qualityLabels2 <- labels2[-which(colnames(geneExprMatrix2) %in% QAResults2$outliers)]
+
+table(qualityLabels2) # We see the number of samples removed from each class.
+
+# We create the surrogate variable analysis (SVA) model to address the batch effect.
+  # We observe the plot before removing the batch effect
+#dataPlot(qualityMatrix, qualityLabels, mode = "orderedBoxplot")
+batchMatrix2 <- batchEffectRemoval(qualityMatrix2, qualityLabels2, method = "sva")
+ # We observe the plot after removing the batch effect
+#dataPlot(batchMatrix, qualityLabels, mode = "orderedBoxplot")
+save(batchMatrix2,file="batchMatrix_MIXED.RData")
+save(qualityLabels2,file="quality_labels_MIXED.RData")
+
+
+```
+
+We extract the expression data from the mixed sample and save it.
+
+```{r}
+
+which(qualityLabels2=="ADENO_SQUAMOUS")
+AS <- batchMatrix2[,261]
+save(AS,file="ADENO_SQUAMOUS_SAMPLE.RData")
+```

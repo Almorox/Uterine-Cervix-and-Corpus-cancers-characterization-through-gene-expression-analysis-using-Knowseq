@@ -1,0 +1,177 @@
+---
+title: "Creación de la matriz limpia (clases: ADENO, SQUAMOUS)"
+author: "Lucía Almorox Antón"
+date: "2023-01-24"
+output: html_document
+---
+
+This code was created for the study "Uterine Cervix and Corpus Cancers Characterization through Gene Expression Analysis Using the Knowseq Tool".
+
+Department of Computer Engineering, Automatics and Robotics,University of Granada. C.I.T.I.C., Periodista Rafael G´omez Montero, 2, 18014. Granada, Spain.
+
+luciaalmorox@correo.ugr.es
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(KnowSeq)
+rm(list = ls())
+memory.limit(size=10000)
+set.seed(111)
+```
+
+Creating count files:
+
+```{r}
+samples <- read.table(file = 'SAMPLES_CERVIX.tsv', sep = '\t', header = TRUE)
+convert_tsv_to_counts <- function(file) {
+  # Read the tsv file into a data frame
+  df <- read.table(file = file, sep = '\t', header = TRUE)
+  # Select columns 1 and 4 from the data frame
+  df <- df[, c(1, 4)]
+  # Take only rows from 5th to the last
+  df <- df[5:nrow(df), ]
+  # Save the data frame in csv format, but with counts extension
+  write.table(df, file = paste0(file, ".counts"), sep = "\t", row.names = FALSE,
+              col.names =FALSE,quote = FALSE)
+}
+# Iterate over each directory, according to the samples sheet.
+n <- nrow(samples)
+for (i in 1:n) {
+  # Change to the directory
+  print(samples$File.ID[i])
+  setwd(samples$File.ID[i])
+  # Apply the convert_tsv_to_csv function to each tsv file
+  convert_tsv_to_counts(samples$File.Name[i])
+  # Go back to the previous directory
+  setwd("..")
+}
+
+
+
+```
+
+Creating the classes of interest.
+
+Samples with the value 'Solid Tissue Normal' correspond to healthy samples.
+
+```{r}
+samples <- read.table(file = 'SAMPLES_CERVIX.tsv', sep = '\t', header = TRUE)
+Class <- samples$Sample.Type
+Class[Class=='Solid Tissue Normal'] <- 'HEALTHY'
+table(Class)
+```
+
+```{r}
+library(readr)
+clinical <- read_delim(file = 'clinical.tsv')
+```
+
+We observe the categories present in the clinical file, in the primary_diagnosis field.
+
+```{r}
+table(clinical$primary_diagnosis)
+
+```
+
+For samples that are not healthy, we make their class be the one that appears in the primary_diagnosis field of the clinical file for that person, using the case_id field as a common field between the samplesheet and clinical file.
+
+```{r}
+for (i in 1:nrow(samples)){
+  if (Class[i] != 'HEALTHY'){
+    CASE_ID_i <- samples$Case.ID[i]
+    clinical_i <- clinical[clinical$case_submitter_id==CASE_ID_i,]
+    ENF <- clinical_i$primary_diagnosis[1]
+    Class[i] <- ENF
+  }
+}
+```
+
+
+We observe the classes we have now.
+
+```{r}
+table(Class)
+```
+
+We group the samples into two classes: ADENO and SQUAMOUS.
+Samples from the 'Adenosquamous carcinoma' and 'HEALTHY' class will be removed later.
+
+```{r}
+Class[Class=='Adenocarcinoma, endocervical type'|Class=='Adenocarcinoma, NOS'|Class=='Endometrioid adenocarcinoma, NOS'] <- 'ADENO'
+Class[Class=='Adenosquamous carcinoma'] <- 'DELETE'
+Class[Class != 'DELETE' & Class != 'ADENO' & Class !='HEALTHY'] <- 'SQUAMOUS'
+
+table(Class)
+```
+
+We create an object with the information related to all the samples.
+
+```{r}
+# Creamos las variables necesarias
+Run <- paste(samples$File.Name,".counts",sep = "")
+Path <- paste("./",samples$File.ID,sep = "")
+# Exportamos DataFrame a CSV
+data.info <- data.frame(Run = Run, Path = Path, Class = Class)
+#write.csv(file = "data_info_STAGES.csv", x = data.info)
+```
+
+We remove the samples whose class is not of interest and save the object as a csv file.
+
+```{r}
+data.info <- data.info[!(data.info$Class=='HEALTHY'|data.info$Class=='DELETE'),]
+
+table(data.info$Class)
+write.csv(file = "data_info.csv", x = data.info)
+```
+
+
+We carry out the necessary preprocessing to obtain the corrected expression matrix of each gene in each sample. We save this matrix and the corresponding labels for the samples that passed the quality filters. These objects will be used in the file "Clasification_cervix_ADENO_SQUAMOUS.Rmd".
+
+```{r}
+
+# Load and merge the count files (genes are in rows and samples are in columns).
+countsInfo <- countsToMatrix("data_info.csv", extension = "")
+
+# Export both the data matrix and the labels to new variables
+countsMatrix <- countsInfo$countsMatrix
+labels <- countsInfo$labels
+
+# Get the Gene Symbols and GC content for each gene
+# (if the GC value is too high it is indicative that the sequencing did not go well, 
+# but we will not pay attention to it in this case).
+myAnnotation <- getGenesAnnotation(rownames(countsMatrix))
+
+# Calculate the expression values using the count matrix and the previously acquired annotation
+geneExprMatrix <- calculateGeneExpressionValues(countsMatrix, annotation = myAnnotation)
+# A first normalization is already being done, although it is not the complete normalization. 
+# (the count values are not "raw" anymore).
+save(geneExprMatrix,file="geneEMAT.RData")
+
+
+# Keep only the genes that have a name, that is, those that are known.
+geneExprMatrix <- geneExprMatrix[!is.na(rownames(geneExprMatrix)),]
+# Perform the RNAseq quality analysis: remove those samples 
+# that may have worse quality or whose expression distribution deviates 
+# too much from the distribution of the rest of samples (outliers).
+# If any samples have been removed, the number of columns will be reduced.
+QAResults <- RNAseqQA(geneExprMatrix, toRemoval = TRUE, toPNG=FALSE, toPDF=FALSE)
+
+qualityMatrix <- QAResults$matrix
+
+# Update the Labels object to keep only those that correspond to the samples that 
+# remain after removing outliers.
+qualityLabels <- labels[-which(colnames(geneExprMatrix) %in% QAResults$outliers)]
+
+table(qualityLabels) # We see the number of samples removed from each class.
+
+# We create the SVA model of surrogate variables to address the batch effect.
+  # We observe the plot before removing the batch effect.
+dataPlot(qualityMatrix, qualityLabels, mode = "orderedBoxplot")
+batchMatrix <- batchEffectRemoval(qualityMatrix, qualityLabels, method = "sva")
+ # We observe the plot after removing the batch effect.
+#dataPlot(batchMatrix, qualityLabels, mode = "orderedBoxplot")
+save(batchMatrix,file="batchMatrix_ADENO_SQUAMOUS.RData")
+save(qualityLabels,file="quality_labels_ADENO_SQUAMOUS.RData")
+
+```
