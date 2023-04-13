@@ -1,6 +1,6 @@
 
 ---
-title: "Clasificación de muestras cancerígenas de cérvix: ADENO - SQUAMOUS"
+title: "Cervical cancerous samples classification: ADENO - SQUAMOUS"
 author: "Lucía Almorox Antón"
 date: "2023-01-24"
 output: html_document
