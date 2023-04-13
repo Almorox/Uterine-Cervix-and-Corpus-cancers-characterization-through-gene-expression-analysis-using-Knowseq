@@ -1,5 +1,5 @@
 ---
-title: "Clasificación CERVIX - CORPUS - HEALTHY"
+title: "CERVIX - CORPUS - HEALTHY Classification"
 author: "Lucía Almorox Antón"
 date: "2023-01-24"
 output: html_document
