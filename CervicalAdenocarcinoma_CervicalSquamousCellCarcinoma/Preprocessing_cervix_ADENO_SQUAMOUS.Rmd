@@ -1,5 +1,5 @@
 ---
-title: "Creación de la matriz limpia (clases: ADENO, SQUAMOUS)"
+title: "Creation of the corrected matrix for ADENO - SQUAMOUS classification of cervical cancerous samples"
 author: "Lucía Almorox Antón"
 date: "2023-01-24"
 output: html_document
